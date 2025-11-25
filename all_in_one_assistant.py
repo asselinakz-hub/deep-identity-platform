@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
 
 import streamlit as st
@@ -11,10 +11,6 @@ import requests
 
 CONTENT_FILE = "content.json"
 DIARY_FILE = "diary.json"
-
-# ---------- OPENAI КЛИЕНТ ----------
-
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # ---------- ЗАГРУЗКА PERSONA ----------
 
@@ -27,16 +23,44 @@ except Exception:
         "Помогаешь ей вести блог, укреплять личный бренд, держать фокус, не ругаешь, а поддерживаешь."
     )
 
+
+# ---------- БЕЗОПАСНОЕ ПОЛУЧЕНИЕ OPENAI-КЛИЕНТА ----------
+
+def get_openai_client() -> Optional[OpenAI]:
+    """
+    Аккуратно получаем OpenAI-клиент:
+    1) Пробуем st.secrets["OPENAI_API_KEY"]
+    2) Если нет — пробуем переменную окружения OPENAI_API_KEY
+    3) Если всё равно нет — возвращаем None (а не падаем)
+    """
+    api_key = None
+
+    # 1. из secrets (Streamlit Cloud / локально через .streamlit/secrets.toml)
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY", None)
+    except Exception:
+        api_key = None
+
+    # 2. если не нашли — пробуем env
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY")
+
+    if not api_key:
+        return None
+
+    return OpenAI(api_key=api_key)
+
+
 # ---------- TELEGRAM ----------
 
-# ВСТАВЬ СЮДА СВОЙ РАБОЧИЙ ТОКЕН И CHAT_ID
+# Твои значения, если хочешь использовать Телеграм
 TELEGRAM_BOT_TOKEN = "8420911157:AAHwNS8HsG-_DgWKGg3KSeGkEB8fRVJnCTo"
 TELEGRAM_CHAT_ID = 5049239963
 
 
 def send_telegram_message(text: str) -> bool:
     """Отправка сообщения в Telegram. Возвращает True при успехе."""
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "ВСТАВЬ_СВОЙ_BOT_TOKEN_СЮДА":
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("ВСТАВЬ_"):
         return False
     if not TELEGRAM_CHAT_ID:
         return False
@@ -106,9 +130,20 @@ def save_diary(entries: List[Dict[str, Any]]) -> None:
         json.dump(entries, f, ensure_ascii=False, indent=2)
 
 
-# ---------- КОНВЕРТАЦИЯ ПОСТА В ФОРМАТЫ ----------
+# ---------- ГЕНЕРАЦИЯ КОНТЕНТА ЧЕРЕЗ OPENAI ----------
 
 def convert_post_to_formats(item: Dict[str, Any], tone: str) -> str:
+    """
+    Взять ОДИН текст и сделать:
+    - Reels-сценарий
+    - LinkedIn-пост
+    - Instagram-карусель
+    - структуру YouTube
+    """
+    client = get_openai_client()
+    if client is None:
+        return "⚠️ Не найден OPENAI_API_KEY. Добавь ключ в secrets или переменные окружения."
+
     body = (item.get("body") or "").strip()
     title = item.get("title") or ""
     topic = item.get("topic") or ""
@@ -120,6 +155,7 @@ def convert_post_to_formats(item: Dict[str, Any], tone: str) -> str:
 Вот исходный текст поста (на русском, можно немного редактировать, но сохраняй смысл и голос):
 
 \"\"\"{body}\"\"\"
+
 
 {base_info}
 
@@ -177,15 +213,18 @@ def convert_post_to_formats(item: Dict[str, Any], tone: str) -> str:
         return f"⚠️ Ошибка при генерации форматов:\n\n`{e}`"
 
 
-# ---------- ГЕНЕРАЦИЯ ИДЕЙ / ТРЕНДОВ ----------
-
 def generate_ideas_from_strategy(strategy_text: str, topics: List[str]) -> str:
+    client = get_openai_client()
+    if client is None:
+        return "⚠️ Не найден OPENAI_API_KEY. Добавь ключ в secrets или переменные окружения."
+
     topics_str = ", ".join(topics)
     prompt = f"""Ты помогаешь Аселе как стратег и продюсер.
 
 Вот её заметки по позиционированию и стратегии:
 
 \"\"\"{strategy_text}\"\"\"
+
 
 Основные темы бренда: {topics_str}.
 
@@ -212,6 +251,10 @@ def generate_ideas_from_strategy(strategy_text: str, topics: List[str]) -> str:
 
 
 def generate_trends(area: str) -> str:
+    client = get_openai_client()
+    if client is None:
+        return "⚠️ Не найден OPENAI_API_KEY. Добавь ключ в secrets или переменные окружения."
+
     prompt = f"""Представь, что ты консультант по трендам для Асели.
 
 Область: {area}.
@@ -238,40 +281,60 @@ def generate_trends(area: str) -> str:
         return f"⚠️ Ошибка при генерации трендов:\n\n`{e}`"
 
 
-# ---------- UI НАСТРОЙКА ----------
+def generate_post_from_scratch(
+    platform: str,
+    topic: str,
+    goal: str,
+    tone: str,
+    extra_notes: str,
+) -> str:
+    """
+    Генерация НОВОГО поста с нуля (для Instagram или LinkedIn).
+    """
+    client = get_openai_client()
+    if client is None:
+        return "⚠️ Не найден OPENAI_API_KEY. Добавь ключ в secrets или переменные окружения."
 
-st.set_page_config(
-    page_title="Аселя — личный ассистент бренда",
-    page_icon="🧠",
-    layout="wide",
-)
+    prompt = f"""Ты — личный контент-продюсер Асели.
 
-st.sidebar.title("Аселя-бросила-хаос 🎯")
-st.sidebar.markdown("Твоя система фокуса, контента и дневника в одном месте.")
+Нужно сгенерировать новый пост.
 
-# ---------- ЗАГРУЗКИ ----------
+Платформа: {platform}
+Тема / категория: {topic}
+Цель поста: {goal}
+Желаемая тональность: {tone}
 
-content_items = load_content()
-diary_entries = load_diary()
-
-today = date.today()
-
-
-# ---------- ФУНКЦИЯ: СВОДКА НЕДЕЛИ ----------
-
-def get_week_bounds(d: date):
-    # понедельник–воскресенье
-    start = d - datetime.strptime(d.isoformat(), "%Y-%m-%d").weekday() * datetime.resolution
-    # Но это слишком муторно; сделаем проще:
-    # weekday: Monday=0, Sunday=6
-    wd = d.weekday()
-    start = d if wd == 0 else (d - timedelta(days=wd))
-    end = start + timedelta(days=6)
-    return start, end
+Дополнительные заметки автора:
+\"\"\"{extra_notes}\"\"\"
 
 
-from datetime import timedelta  # импорт тут, чтобы не ломать порядок
+Правила:
+- Пиши на русском.
+- Сохраняй живой, честный, чуть дерзкий, но тёплый голос.
+- Без инфоцыганщины, без воды, с опорой на личный опыт и наблюдения.
+- Для Instagram / LinkedIn можно делать 3–6 абзацев по 2–4 строки.
 
+Сделай:
+- Сначала предложи короткий хук (1–2 строки).
+- Потом основной текст поста.
+- В конце 1 мягкий призыв: поделиться мыслью, опытом или сохраниться в закладки.
+"""
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-5.1",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.8,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ Ошибка при генерации поста:\n\n`{e}`"
+
+
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ НЕДЕЛИ ----------
 
 def filter_items_by_week(items: List[Dict[str, Any]], week_start: date) -> List[Dict[str, Any]]:
     week_end = week_start + timedelta(days=6)
@@ -296,9 +359,35 @@ def compute_week_stats(items: List[Dict[str, Any]]) -> Dict[str, int]:
     return stats
 
 
+# ---------- UI НАСТРОЙКА ----------
+
+st.set_page_config(
+    page_title="Аселя — личный ассистент бренда",
+    page_icon="🧠",
+    layout="wide",
+)
+
+st.sidebar.title("Аселя-бросила-хаос 🎯")
+st.sidebar.markdown("Твоя система фокуса, контента и дневника в одном месте.")
+
+# ---------- ЗАГРУЗКА ДАННЫХ ----------
+
+content_items = load_content()
+diary_entries = load_diary()
+today = date.today()
+
 # ---------- ТАБЫ ----------
 
-tab_plan, tab_instagram, tab_linkedin, tab_youtube, tab_diary, tab_factory, tab_trends, tab_all = st.tabs(
+(
+    tab_plan,
+    tab_instagram,
+    tab_linkedin,
+    tab_youtube,
+    tab_diary,
+    tab_factory,
+    tab_trends,
+    tab_all,
+) = st.tabs(
     [
         "📅 План недели",
         "📸 Instagram",
@@ -317,7 +406,6 @@ with tab_plan:
     st.header("📅 План недели и счётчик контента")
 
     selected_week_monday = st.date_input("Неделя с (понедельник)", today)
-    # нормализуем к понедельнику
     wd = selected_week_monday.weekday()
     if wd != 0:
         selected_week_monday = selected_week_monday - timedelta(days=wd)
@@ -336,7 +424,6 @@ with tab_plan:
     st.markdown("### Таблица контента на эту неделю")
 
     if week_items:
-        # лёгкий формат для таблицы
         rows = []
         for it in week_items:
             rows.append(
@@ -398,13 +485,94 @@ with tab_plan:
                 st.markdown("### ✨ Сгенерированные версии")
                 st.markdown(res)
 
-
 # ---------- ТАБ: INSTAGRAM ----------
 
 with tab_instagram:
     st.header("📸 Instagram — база постов")
 
-    st.markdown("### Добавить пост")
+    # --- Блок: генерация НОВОГО поста через ИИ ---
+    st.subheader("✨ Сгенерировать новый пост для Instagram")
+
+    with st.form("ig_ai_generate_form"):
+        ig_ai_topic = st.text_input("Тема / категория поста", key="ig_ai_topic")
+        ig_ai_goal = st.text_input("Цель поста (что человек должен понять/почувствовать)", key="ig_ai_goal")
+        ig_ai_tone = st.selectbox(
+            "Желаемая тональность",
+            [
+                "Честно и уязвимо",
+                "Глубоко и рефлексивно",
+                "Спокойно-экспертно",
+                "Дерзко и прямолинейно",
+                "С юмором",
+            ],
+            key="ig_ai_tone",
+        )
+        ig_ai_notes = st.text_area(
+            "Черновые мысли / опорные фразы (можно пару пунктов, можно пусто)",
+            key="ig_ai_notes",
+        )
+
+        gen_ig_btn = st.form_submit_button("✨ Сгенерировать текст поста")
+        if gen_ig_btn:
+            if not ig_ai_topic.strip():
+                st.warning("Добавь хотя бы тему поста — из пустоты сложно делать честный текст 🙂")
+            else:
+                with st.spinner("Готовлю текст поста…"):
+                    res = generate_post_from_scratch(
+                        platform="Instagram",
+                        topic=ig_ai_topic,
+                        goal=ig_ai_goal,
+                        tone=ig_ai_tone,
+                        extra_notes=ig_ai_notes,
+                    )
+                st.markdown("### 📝 Сгенерированный пост")
+                st.session_state["ig_ai_generated_text"] = res
+                st.markdown(res)
+
+    if "ig_ai_generated_text" in st.session_state and st.session_state["ig_ai_generated_text"]:
+        st.markdown("---")
+        st.subheader("💾 Сохранить сгенерированный пост как запись в базе")
+
+        with st.form("ig_ai_save_form"):
+            ig_save_date = st.date_input("Дата", today, key="ig_ai_save_date")
+            ig_save_category = st.text_input("Категория (для фильтрации)", value="Потенциалы", key="ig_ai_save_cat")
+            ig_save_format = st.selectbox(
+                "Формат",
+                ["Reels", "Пост", "Карусель", "Stories"],
+                key="ig_ai_save_format",
+            )
+            ig_save_status = st.selectbox(
+                "Статус",
+                ["Черновик", "Запланировано", "Опубликовано"],
+                key="ig_ai_save_status",
+            )
+            ig_save_title = st.text_input("Заголовок / опорная фраза", key="ig_ai_save_title")
+            ig_save_body = st.text_area(
+                "Текст (можешь чуть подправить перед сохранением)",
+                value=st.session_state["ig_ai_generated_text"],
+                height=250,
+                key="ig_ai_save_body",
+            )
+
+            save_ai_ig_btn = st.form_submit_button("💾 Сохранить как пост Instagram")
+            if save_ai_ig_btn:
+                new_item = {
+                    "id": get_next_content_id(content_items),
+                    "platform": "Instagram",
+                    "planned_date": ig_save_date.isoformat(),
+                    "topic": ig_save_category,
+                    "format": ig_save_format,
+                    "status": ig_save_status,
+                    "title": ig_save_title,
+                    "body": ig_save_body,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                content_items.append(new_item)
+                save_content(content_items)
+                st.success(f"Сохранили сгенерированный пост Instagram с ID {new_item['id']}")
+
+    st.markdown("---")
+    st.subheader("✍️ Добавить пост вручную")
 
     with st.form("ig_form"):
         col1, col2 = st.columns(2)
@@ -507,13 +675,95 @@ with tab_instagram:
                 st.markdown("### ✨ Сгенерированные версии")
                 st.markdown(res)
 
-
 # ---------- ТАБ: LINKEDIN ----------
 
 with tab_linkedin:
     st.header("💼 LinkedIn — база постов")
 
-    st.markdown("### Добавить пост")
+    # --- Блок: генерация НОВОГО поста через ИИ ---
+    st.subheader("✨ Сгенерировать новый пост для LinkedIn")
+
+    with st.form("li_ai_generate_form"):
+        li_ai_topic = st.text_input("Тема / категория поста", key="li_ai_topic")
+        li_ai_goal = st.text_input("Цель поста (что человек/HR/лидер должен понять/почувствовать)", key="li_ai_goal")
+        li_ai_tone = st.selectbox(
+            "Желаемая тональность",
+            [
+                "Спокойно-экспертно",
+                "Глубоко и рефлексивно",
+                "Честно и уязвимо",
+                "Дерзко и прямолинейно",
+            ],
+            key="li_ai_tone",
+        )
+        li_ai_notes = st.text_area(
+            "Черновые мысли / факты / кейсы (можно коротко)",
+            key="li_ai_notes",
+        )
+
+        gen_li_btn = st.form_submit_button("✨ Сгенерировать LinkedIn-пост")
+        if gen_li_btn:
+            if not li_ai_topic.strip():
+                st.warning("Добавь хотя бы тему поста.")
+            else:
+                with st.spinner("Готовлю LinkedIn-пост…"):
+                    res = generate_post_from_scratch(
+                        platform="LinkedIn",
+                        topic=li_ai_topic,
+                        goal=li_ai_goal,
+                        tone=li_ai_tone,
+                        extra_notes=li_ai_notes,
+                    )
+                st.markdown("### 📝 Сгенерированный LinkedIn-пост")
+                st.session_state["li_ai_generated_text"] = res
+                st.markdown(res)
+
+    if "li_ai_generated_text" in st.session_state and st.session_state["li_ai_generated_text"]:
+        st.markdown("---")
+        st.subheader("💾 Сохранить сгенерированный LinkedIn-пост")
+
+        with st.form("li_ai_save_form"):
+            li_save_date = st.date_input("Дата", today, key="li_ai_save_date")
+            li_save_category = st.text_input("Категория", value="L&D", key="li_ai_save_cat")
+            li_save_status = st.selectbox(
+                "Статус",
+                ["Черновик", "Запланировано", "Опубликовано"],
+                key="li_ai_save_status",
+            )
+            li_save_tone = st.selectbox(
+                "Тональность поста (для внутренней пометки)",
+                ["Scholar/AI", "Insights", "Репост + комментарий"],
+                key="li_ai_save_tone_sel",
+            )
+
+            li_save_title = st.text_input("Заголовок / хук", key="li_ai_save_title")
+            li_save_body = st.text_area(
+                "Текст поста (можно поправить перед сохранением)",
+                value=st.session_state["li_ai_generated_text"],
+                height=250,
+                key="li_ai_save_body",
+            )
+
+            save_ai_li_btn = st.form_submit_button("💾 Сохранить как LinkedIn-пост")
+            if save_ai_li_btn:
+                new_item = {
+                    "id": get_next_content_id(content_items),
+                    "platform": "LinkedIn",
+                    "planned_date": li_save_date.isoformat(),
+                    "topic": li_save_category,
+                    "format": "Пост",
+                    "status": li_save_status,
+                    "title": li_save_title,
+                    "body": li_save_body,
+                    "tone": li_save_tone,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                content_items.append(new_item)
+                save_content(content_items)
+                st.success(f"Сохранили сгенерированный пост LinkedIn с ID {new_item['id']}")
+
+    st.markdown("---")
+    st.subheader("✍️ Добавить пост вручную")
 
     with st.form("li_form"):
         col1, col2 = st.columns(2)
@@ -531,7 +781,7 @@ with tab_linkedin:
                 key="li_status",
             )
             li_tone = st.selectbox(
-                "Тональность поста",
+                "Тональность поста (для пометки)",
                 ["Scholar/AI", "Insights", "Репост + комментарий"],
                 key="li_tone_sel",
             )
@@ -616,7 +866,6 @@ with tab_linkedin:
                 st.markdown("### ✨ Сгенерированные версии")
                 st.markdown(res)
 
-
 # ---------- ТАБ: YOUTUBE ----------
 
 with tab_youtube:
@@ -631,7 +880,11 @@ with tab_youtube:
 
         yt_btn = st.form_submit_button("✨ Сгенерировать структуру видео")
         if yt_btn:
-            user_prompt = f"""Помоги Аселе набросать структуру YouTube-видео.
+            client = get_openai_client()
+            if client is None:
+                ans = "⚠️ Не найден OPENAI_API_KEY. Добавь ключ в secrets или переменные окружения."
+            else:
+                user_prompt = f"""Помоги Аселе набросать структуру YouTube-видео.
 
 Тема: {yt_title}
 Цель видео: {yt_goal}
@@ -639,36 +892,38 @@ with tab_youtube:
 Её черновые мысли:
 \"\"\"{yt_notes}\"\"\"
 
+
 Сделай:
 - Предложение названия
 - Хук на 10–15 секунд в её живом откровенном стиле
 - 3–5 блоков содержания с кратким описанием
 - Идею завершения и мягкий призыв к дальнейшему действию
 """
-            try:
-                resp = client.chat.completions.create(
-                    model="gpt-5.1",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.7,
-                )
-                ans = resp.choices[0].message.content
-            except Exception as e:
-                ans = f"⚠️ Ошибка при генерации структуры видео:\n\n`{e}`"
+                try:
+                    resp = client.chat.completions.create(
+                        model="gpt-5.1",
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=0.7,
+                    )
+                    ans = resp.choices[0].message.content
+                except Exception as e:
+                    ans = f"⚠️ Ошибка при генерации структуры видео:\n\n`{e}`"
 
             st.markdown("### 🧩 Предложенная структура")
             st.markdown(ans)
-
 
 # ---------- ТАБ: ДНЕВНИК ----------
 
 with tab_diary:
     st.header("📖 Дневник Асели — материал для книги")
 
-    st.markdown("Это пространство, где ты фиксируешь свой путь: фокус дня, эмоции, выводы. "
-                "Потом мы сможем собрать из этого книгу.")
+    st.markdown(
+        "Это пространство, где ты фиксируешь свой путь: фокус дня, эмоции, выводы. "
+        "Потом мы сможем собрать из этого книгу."
+    )
 
     with st.form("diary_form"):
         d_date = st.date_input("Дата", today, key="diary_date")
@@ -712,7 +967,6 @@ with tab_diary:
 
     st.markdown("---")
     if st.button("📤 Экспортировать весь дневник в текст"):
-        # просто отдаём как markdown на экране, при желании скопируешь
         parts = []
         for e in sorted(diary_entries, key=lambda x: x.get("date", "")):
             parts.append(
@@ -724,7 +978,6 @@ with tab_diary:
             )
         full_text = "\n".join(parts) if parts else "_Пока нет записей_"
         st.markdown(full_text)
-
 
 # ---------- ТАБ: КОНТЕНТ-ФАБРИКА ----------
 
@@ -765,7 +1018,6 @@ with tab_factory:
             st.markdown("### 💡 Идеи для контента")
             st.markdown(ideas)
 
-
 # ---------- ТАБ: ТРЕНДЫ ----------
 
 with tab_trends:
@@ -789,7 +1041,6 @@ with tab_trends:
             txt = generate_trends(area)
         st.markdown("### 📌 Тренды и точки контента")
         st.markdown(txt)
-
 
 # ---------- ТАБ: ВЕСЬ КОНТЕНТ + TELEGRAM ----------
 
@@ -829,3 +1080,4 @@ with tab_all:
                 st.success("Отправлено в Telegram ✅")
             else:
                 st.error("Не удалось отправить. Проверь TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в файле.")
+
